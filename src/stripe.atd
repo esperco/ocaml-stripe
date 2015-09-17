@@ -1,0 +1,1089 @@
+(*
+   Types involved in the Stripe API (version 2015-02-18)
+
+   Documentation for the latest version:
+
+     https://stripe.com/docs/api
+
+   Log of incompatible changes:
+
+     https://stripe.com/docs/upgrades#api-changelog
+*)
+
+(* TODO: the customer field of a subscription is expandable *)
+
+(*
+type json <ocaml module="Yojson.Safe"> = abstract
+*)
+
+type timestamp = float wrap <ocaml t="Util_time.t"
+                                   wrap="Util_time.of_float"
+                                   unwrap="Util_time.to_float">
+
+type pos_int = int <ocaml validator="
+  fun path x ->
+    if x > 0 then None
+    else Some (Ag_util.Validation.error path)
+">
+
+type nonneg_int = int <ocaml validator="
+  fun path x ->
+    if x >= 0 then None
+    else Some (Ag_util.Validation.error path)
+">
+
+type card_id = string
+type charge_id = string
+type coupon_id = string
+type customer_id = string
+type invoice_id = string
+type invoice_item_id = string (* invoice item ID or subscription ID *)
+type plan_id = string
+type receipt_number = string
+type subscription_id = string
+
+type currency = string
+
+type error = {
+  type_ <json name="type">: string;
+    (* The type of error returned.
+       Can be invalid_request_error, api_error, or card_error. *)
+
+  message: string;
+    (* A human-readable message giving more details about the error.
+       For card errors, these messages can be shown to your users. *)
+
+  ?code: string option;
+    (* For card errors, a short string from amongst those listed
+       on the right describing the kind of card error that occurred. *)
+
+  ?param: string option;
+    (* The parameter the error relates to if the error is
+       parameter-specific. You can use this to display a message
+       near the correct form field, for example. *)
+}
+
+type error_response = {
+  error: error;
+}
+
+type metadata = (string * string) list
+    <json repr="object">
+    <ocaml validator="
+      fun path l ->
+        if
+          List.length l <= 10 &&
+          List.for_all (fun (k, v) ->
+            String.length k <= 40 && String.length v <= 500
+          ) l
+        then None
+        else Some (Ag_util.Validation.error path)
+">
+  (*
+     An untyped, multipurpose definition of the user-defined metadata field
+     supported on all Stripe objects.
+     You can have up to 10 keys, with key names up to 40 characters long
+     and values up to 500 characters long.
+
+     https://stripe.com/docs/api#metadata
+  *)
+
+(* A page of items, known as "list" in the documentation. *)
+type 'a stripe_list = {
+  object: string; (* = "list" *)
+  data: 'a list;
+  has_more: bool;
+
+  url: string;
+    (* The URL (the path only, actually) where this list can be accessed. *)
+
+  ?total_count: int option;
+    (* Positive integer or zero or null.
+       The total number of items available.
+       This value is not included by default, but you can request it
+       by specifying ?include[]=total_count
+    *)
+} <ocaml field_prefix="list_">
+
+(* This parses any field that could be deleted, so that we can check
+ * before parsing a value completely and erroring out.
+ *)
+type deleted = {
+  id       : string;
+  ?deleted : bool option;
+} <ocaml field_prefix="del_">
+
+type full_customer = simple_card customer
+type simple_customer = card_id customer
+
+type deleted_customer = {
+  id: customer_id;
+  deleted: bool;
+} <ocaml field_prefix="del_cus_">
+
+type 'card customer = {
+  id: customer_id;
+
+  object: string; (* = "customer" *)
+
+  livemode: bool;
+
+  (*
+    TODO: 'cards' field is now called 'sources' and can contain other objects
+           than cards.
+           The following will work only we don't take other sources
+           of payment than cards.
+  *)
+  ?cards: simple_card stripe_list option; (* old version only, required *)
+  ?sources: simple_card stripe_list option; (* new version only, required *)
+
+  created: timestamp;
+  account_balance: int;
+    (*
+      Current balance, if any, being stored on the customer’s account.
+      If negative, the customer has credit to apply to the next invoice.
+      If positive, the customer has an amount owed that will be added
+      to the next invoice. The balance does not refer to any unpaid
+      invoices; it solely takes into account amounts that have yet
+      to be successfully applied to any invoice. This balance is
+      only taken into account for recurring charges.
+    *)
+
+  ?currency: currency option;
+    (* The currency the customer can be charged in for recurring
+       billing purposes (subscriptions, invoices, invoice items). *)
+
+  (*
+    TODO: 'default_card' field is now called 'default_source' and
+           can hold other objects than cards or card IDs.
+           The following will work only we don't take other sources
+           of payment than cards.
+  *)
+  ?default_card: 'card option; (* old *)
+  ?default_source: 'card option; (* new *)
+    (* ID of the default credit card attached to the customer. *)
+
+
+  ~delinquent: bool;
+    (* Whether or not the latest charge for the customer’s
+       latest invoice has failed *)
+
+  ?description: string option;
+
+  ?discount: discount option;
+    (* Describes the current discount active on the customer,
+       if there is one. *)
+
+  ?email: string option;
+
+  ~metadata: metadata;
+    (* A set of key/value pairs that you can attach to a customer object.
+       It can be useful for storing additional information about the
+       customer in a structured format. *)
+
+  subscriptions: subscription stripe_list;
+    (* The customer’s current subscriptions, if any *)
+
+} <ocaml field_prefix="cus_">
+
+
+type full_card = simple_customer card
+type simple_card = customer_id card
+
+type deleted_card = {
+  id: card_id;
+  deleted: bool;
+} <ocaml field_prefix="del_card_">
+
+type 'cus card = {
+  id: card_id;
+    (* ID of card (used in conjunction with a customer or recipient ID) *)
+
+  object: string; (* = "card" (presumably) *)
+
+  brand: string;
+    (* Card brand. Can be Visa, American Express, MasterCard, Discover,
+       JCB, Diners Club, or Unknown. *)
+
+  exp_month: int;
+  exp_year: int;
+
+  fingerprint: string;
+    (* Uniquely identifies this particular card number.
+       You can use this attribute to check whether two customers
+       who’ve signed up with you are using the same card number, for example.
+    *)
+
+  funding: string;
+    (* Card funding type. Can be credit, debit, prepaid, or unknown *)
+
+  last4: string;
+  ?address_city: string option;
+  ?address_country: string option;
+    (* Billing address country, if provided when creating card *)
+
+  ?address_line1: string option;
+  ?address_line1_check: string option;
+    (* If address_line1 was provided, results of the check:
+       pass, fail, or unchecked. *)
+
+  ?address_line2: string option;
+  ?address_state: string option;
+  ?address_zip: string option;
+  ?address_zip_check: string option;
+    (* If address_zip was provided, results of the check:
+       pass, fail, or unchecked. *)
+
+  ?country: string option;
+    (* Two-letter ISO code representing the country of the card.
+       You could use this attribute to get a sense of the
+       international breakdown of cards you’ve collected. *)
+
+  customer: 'cus;
+
+  ?cvc_check: string option;
+    (* If a CVC was provided, results of the check:
+       pass, fail, or unchecked *)
+
+  ?dynamic_last4: string option;
+    (* (For Apple Pay integrations only.)
+       The last four digits of the device account number. *)
+
+  ?name: string option;
+    (* Cardholder name *)
+
+} <ocaml field_prefix="card_">
+
+type discount = {
+  object: string; (* = "discount" *)
+  coupon: coupon;
+    (* Hash [sic] describing the coupon applied to create this discount
+       customer string *)
+
+  start: timestamp;
+    (* Date that the coupon was applied *)
+
+  ?end_ <json name="end">: timestamp option;
+    (* If the coupon has a duration of once or repeating,
+       the date that this discount will end.
+       If the coupon used has a forever duration,
+       this attribute will be null. *)
+
+  ?subscription: subscription_id option;
+    (* The subscription that this coupon is applied to,
+       if it is applied to a particular subscription *)
+
+} <ocaml field_prefix="dis_">
+
+type refund_reason = [
+  | Duplicate <json name="duplicate">
+  | Fraudulent <json name="fraudulent">
+  | Requested_by_customer <json name="requested_by_customer">
+]
+
+type refund = {
+  id: string;
+
+  object: string;
+    (* value is "list"
+       (according to Stripe documentation; this looks incorrect,
+       should probably be "refund") *)
+
+  amount: int;
+    (* Amount refunded, in cents. *)
+
+  created: timestamp;
+
+  currency: currency;
+    (*
+       Three-letter ISO code representing the currency of the refund.
+    *)
+
+  balance_transaction: string; (* example? *)
+    (*
+       Balance transaction that describes the impact of this refund
+       on your account balance.
+    *)
+
+  charge: charge_id;
+    (* ID of the charge that was refunded. *)
+
+  ~metadata: metadata;
+    (*
+       A set of key/value pairs that you can attach to a refund.
+       It can be useful for storing additional information
+       about the refund in a structured format.
+    *)
+
+  ?reason: refund_reason option;
+    (*
+       Reason for the refund. If set, possible values are "duplicate",
+       "fraudulent", and "requested_by_customer".
+    *)
+
+  receipt_number: string;
+    (*
+       This is the transaction number that appears on email
+       receipts sent for this refund.
+    *)
+
+  ?description: string option;
+
+} <ocaml field_prefix="re_">
+
+type payment_status = [
+  | Succeeded <json name="succeeded">
+  | Failed <json name="failed">
+]
+
+type charge = {
+  id: charge_id;
+
+  object: string;
+    (* value is "charge" *)
+
+  livemode: bool;
+
+  amount: nonneg_int;
+    (*
+       Amount charged in cents
+    *)
+
+  captured: bool;
+    (*
+       If the charge was created without capturing, this boolean
+       represents whether or not it is still uncaptured or has since
+       been captured.
+    *)
+
+  created: timestamp;
+
+  currency: currency;
+    (*
+       Three-letter ISO currency code representing the currency in
+       which the charge was made.
+    *)
+
+  paid: bool;
+
+  refunded: bool;
+    (*
+       Whether or not the charge has been fully refunded. If the
+       charge is only partially refunded, this attribute will still be
+       false.
+    *)
+
+  refunds: refund stripe_list;
+    (*
+       A list of refunds that have been applied to the charge.
+    *)
+
+  source: simple_card;
+    (*
+       For most Stripe users, the source of every charge is a credit
+       or debit card. This hash is then the card object describing
+       that card.
+    *)
+
+  status: payment_status;
+    (*
+       The status of the payment is either succeeded or failed.
+    *)
+
+  amount_refunded: nonneg_int;
+    (*
+       Amount in cents refunded (can be less than the amount attribute
+       on the charge if a partial refund was issued).
+    *)
+
+  ?balance_transaction: string option; (* example? *)
+    (*
+       ID of the balance transaction that describes the impact of this
+       charge on your account balance (not including refunds or
+       disputes).
+    *)
+
+  customer: customer_id;
+    (*
+       ID of the customer this charge is for if one exists.
+    *)
+
+  ?description: string option;
+
+(*
+  ?dispute: dispute option; (* TODO create type definition for disputes *)
+*)
+    (*
+       Details about the dispute if the charge has been disputed.
+    *)
+
+  ?failure_code: string option;
+    (*
+       Error code explaining reason for charge failure if available
+       (see the errors section for a list of codes).
+    *)
+
+  ?failure_message: string option;
+    (*
+       Message to user further explaining reason for charge failure if
+       available.
+    *)
+
+  ?invoice: invoice_id option;
+    (*
+       ID of the invoice this charge is for if one exists.
+    *)
+
+  ~metadata: metadata;
+    (*
+       A set of key/value pairs that you can attach to a charge
+       object. It can be useful for storing additional information
+       about the charge in a structured format.
+    *)
+
+  ?receipt_email: string option;
+    (*
+       This is the email address that the receipt for this charge was
+       sent to.
+    *)
+
+  ?receipt_number: string option;
+    (*
+       This is the transaction number that appears on email receipts
+       sent for this charge.
+    *)
+
+(*
+  fraud_details: fraud_details; (* TODO support this *)
+    (*
+       Hash with information on fraud assessments for the
+       charge. Assessments reported by you have the key user_report
+       and, if set, possible values of safe and
+       fraudulent. Assessments from Stripe have the key stripe_report
+       and, if set, the value fraudulent.
+    *)
+*)
+
+(*
+  ?shipping: shipping option; (* TODO support this *)
+    (*
+       Shipping information for the charge.
+    *)
+*)
+} <ocaml field_prefix="ch_">
+
+
+type invoice = {
+  id: invoice_id;
+  object: string; (* = "invoice" *)
+
+  livemode: bool;
+
+  amount_due: int;
+    (*
+       Final amount due at this time for this invoice. If the
+       invoice’s total is smaller than the minimum charge amount, for
+       example, or if there is account credit that can be applied to
+       the invoice, the amount_due may be 0. If there is a positive
+       starting_balance for the invoice (the customer owes money), the
+       amount_due will also take that into account. The charge that
+       gets generated for the invoice will be for the amount specified
+       in amount_due.
+    *)
+
+  attempt_count: nonneg_int;
+    (*
+       Number of payment attempts made for this invoice, from the
+       perspective of the payment retry schedule. Any payment attempt
+       counts as the first attempt, and subsequently only automatic
+       retries increment the attempt count. In other words, manual
+       payment attempts after the first attempt do not affect the
+       retry schedule.
+    *)
+
+  attempted: bool;
+    (*
+       Whether or not an attempt has been made to pay the invoice. An
+       invoice is not attempted until 1 hour after the invoice.created
+       webhook, for example, so you might not want to display that
+       invoice as unpaid to your users.
+    *)
+
+  closed: bool;
+    (*
+       Whether or not the invoice is still trying to collect
+       payment. An invoice is closed if it’s either paid or it has
+       been marked closed. A closed invoice will no longer attempt to
+       collect payment.
+    *)
+
+  currency: currency;
+
+  customer: customer_id;
+
+  date: timestamp;
+
+  forgiven: bool;
+    (*
+       Whether or not the invoice has been forgiven. Forgiving an
+       invoice instructs us to update the subscription status as if
+       the invoice were succcessfully paid. Once an invoice has been
+       forgiven, it cannot be unforgiven or reopened
+    *)
+
+  lines: invoice_line_item stripe_list;
+    (*
+       The individual line items that make up the invoice
+    *)
+
+  paid: bool;
+    (*
+       Whether or not payment was successfully collected for this
+       invoice. An invoice can be paid (most commonly) with a charge
+       or with credit from the customer’s account balance.
+    *)
+
+  period_end: timestamp;
+    (*
+       End of the usage period during which invoice items were added
+       to this invoice
+    *)
+
+  period_start: timestamp;
+    (*
+       Start of the usage period during which invoice items were added
+       to this invoice
+
+       [matches period_end when the current period is the trial period]
+    *)
+
+  starting_balance: int;
+    (*
+       Starting customer balance before attempting to pay invoice. If
+       the invoice has not been attempted yet, this will be the
+       current customer balance.
+    *)
+
+  subtotal: int;
+    (*
+       Total of all subscriptions, invoice items, and prorations on
+       the invoice before any discount is applied
+    *)
+
+  total: int;
+    (*
+       Total after discount
+    *)
+
+  ?application_fee: int option;
+    (*
+       The fee in cents that will be applied to the invoice and
+       transferred to the application owner’s Stripe account when the
+       invoice is paid.
+    *)
+
+  ?charge: charge_id option;
+    (*
+       ID of the latest charge generated for this invoice, if any.
+    *)
+
+  ?description: string option;
+
+  ?discount: discount option;
+
+  ?ending_balance: int option;
+    (*
+       Ending customer balance after attempting to pay invoice. If the
+       invoice has not been attempted yet, this will be null.
+    *)
+
+  ?next_payment_attempt: timestamp option;
+    (*
+       The time at which payment will next be attempted.
+    *)
+
+  ?receipt_number: string option;
+    (*
+       This is the transaction number that appears on email receipts
+       sent for this invoice.
+    *)
+
+  ?statement_descriptor: string option;
+    (*
+       Extra information about an invoice for the customer’s credit
+       card statement.
+    *)
+
+  ?subscription: subscription_id option;
+    (*
+       The subscription that this invoice was prepared for, if any.
+    *)
+
+  ?webhooks_delivered_at: timestamp option;
+    (*
+       The time at which webhooks for this invoice were successfully
+       delivered (if the invoice had no webhooks to deliver, this will
+       match date). Invoice payment is delayed until webhooks are
+       delivered, or until all webhook delivery attempts have been
+       exhausted.
+    *)
+
+  ~metadata: metadata;
+    (*
+       A set of key/value pairs that you can attach to an invoice
+       object. It can be useful for storing additional information
+       about the invoice in a structured format.
+    *)
+
+  ?tax: int option;
+    (*
+       The amount of tax included in the total, calculated from
+       tax_percent and the subtotal. If no tax_percent is defined,
+       this value will be null.
+    *)
+
+  ?tax_percent: float option; (* decimal *)
+    (*
+       This percentage of the subtotal has been added to the total
+       amount of the invoice, including invoice line items and
+       discounts. This field is inherited from the subscription’s
+       tax_percent field, but can be changed before the invoice is
+       paid. This field defaults to null.
+    *)
+} <ocaml field_prefix="inv_">
+
+type line_item_source_type = [
+  | Invoice_item <json name="invoiceitem">
+  | Subscription <json name="subscription">
+]
+
+type period = {
+  start: timestamp;
+  end: timestamp;
+} <ocaml field_prefix="pe_">
+
+type invoice_line_item = {
+  id: invoice_item_id;
+    (*
+       The ID of the source of this line item, either an invoice item
+       or a subscription
+    *)
+
+  object: string;
+    (* "line_item" *)
+
+  livemode: bool;
+    (*
+       Whether or not this is a test line item
+    *)
+
+  amount: int;
+    (*
+       The amount, in cents
+    *)
+
+  currency: currency;
+
+  period: period;
+    (*
+       The period this line_item covers
+    *)
+
+  proration: bool;
+    (*
+       Whether or not this is a proration
+    *)
+
+  type_ <json name="type">: line_item_source_type;
+    (*
+       A string identifying the type of the source of this line item,
+       either an invoiceitem or a subscription
+    *)
+
+  ?description: string option;
+    (*
+       A text description of the line item, if the line item is an
+       invoice item
+    *)
+
+  ~metadata: metadata;
+    (*
+       Key-value pairs attached to the line item, if the line item is
+       an invoice item
+    *)
+
+  plan: plan;
+    (*
+       The plan of the subscription, if the line item is a
+       subscription or a proration
+    *)
+
+  quantity: int;
+    (*
+       The quantity of the subscription, if the line item is a
+       subscription or a proration
+    *)
+
+  ?subscription: subscription_id option;
+    (*
+       When type is invoiceitem, the subscription that the invoice
+       item pertains to, if any. Left blank when type is already
+       subscription, as it’d be redundant with id.
+    *)
+} <ocaml field_prefix="ii_">
+
+type invoice_item = {
+  id: invoice_item_id;
+  object: string; (* = "invoiceitem" *)
+  livemode: bool;
+  amount: int;
+  currency: currency;
+  customer: customer_id;
+  date: timestamp;
+  discountable: bool;
+    (*
+      If true, discounts will apply to this invoice item.
+      Always false for prorations.
+    *)
+  ~metadata: metadata;
+    (*
+      A set of key/value pairs that you can attach to an invoice item object.
+      It can be useful for storing additional information about the invoice
+      item in a structured format.
+    *)
+  proration: bool;
+    (*
+      Whether or not the invoice item was created automatically as a proration
+      adjustment when the customer switched plans.
+    *)
+  description: string;
+  ?invoice: invoice_id option;
+  period: period;
+  ?plan: plan option;
+    (*
+      If the invoice item is a proration, the plan of the subscription
+      that the proration was computed for.
+    *)
+  ?quantity: int option;
+    (*
+      If the invoice item is a proration, the quantity of the subscription
+      that the proration was computed for.
+    *)
+  ?subscription: subscription_id option;
+    (*
+      The subscription that this invoice item has been created for, if any.
+    *)
+} <ocaml field_prefix="ivi_">
+
+type coupon = {
+  id: coupon_id;
+  object: string; (* = "coupon" *)
+
+  livemode: bool;
+  created: timestamp;
+  duration: string;
+    (*
+      One of forever, once, and repeating. Describes how long a
+      customer who applies this coupon will get the discount.
+    *)
+
+  ?amount_off: pos_int option;
+    (*
+      Positive amount (in the currency specified) that will be taken
+      off the subtotal of any invoices for this customer.
+    *)
+
+  ?currency: currency option;
+    (*
+      If amount_off has been set, the currency of the amount to take
+      off.
+    *)
+
+  ?duration_in_months: pos_int option;
+    (*
+      If duration is repeating, the number of months the coupon
+      applies. Null if coupon duration is forever or once.
+    *)
+
+  ?max_redemptions: pos_int option;
+    (*
+      Maximum number of times this coupon can be redeemed, in total,
+      before it is no longer valid.
+    *)
+
+  ~metadata: metadata;
+    (*
+      A set of key/value pairs that you can attach to a coupon
+      object. It can be useful for storing additional information about
+      the coupon in a structured format.
+    *)
+
+  ?percent_off: pos_int option;
+    (*
+      Percent that will be taken off the subtotal of any invoices for
+      this customer for the duration of the coupon. For example, a
+      coupon with percent_off of 50 will make a $100 invoice $50
+      instead.
+    *)
+
+  ?redeem_by: timestamp option;
+    (* Date after which the coupon can no longer be redeemed *)
+
+  times_redeemed: nonneg_int;
+    (* Number of times this coupon has been applied to a customer. *)
+
+  valid: bool;
+    (*
+      Taking account of the above properties, whether this coupon can
+      still be applied to a customer
+    *)
+
+} <ocaml field_prefix="cou_">
+
+type subscription_status = [
+  | Trialing <json name="trialing">
+  | Active <json name="active">
+  | Past_due <json name="past_due">
+  | Canceled <json name="canceled">
+  | Unpaid <json name="unpaid">
+]
+
+type subscription = {
+  id: subscription_id;
+
+  object: string; (* = "subscription" *)
+
+  cancel_at_period_end: bool;
+    (*
+       If the subscription has been canceled with the at_period_end
+       flag set to true, cancel_at_period_end on the subscription
+       will be true. You can use this attribute to determine whether
+       a subscription that has a status of active is scheduled to be
+       canceled at the end of the current period.
+     *)
+
+  customer: customer_id;
+
+  plan: plan;
+    (* Hash [sic] describing the plan the customer is subscribed to *)
+
+  quantity: int;
+
+  start: timestamp;
+    (* Date the subscription started *)
+
+  status: subscription_status;
+    (*
+       Possible values are trialing, active, past_due, canceled, or unpaid.
+       A subscription still in its trial period is trialing and moves
+       to active when the trial period is over. When payment to renew
+       the subscription fails, the subscription becomes
+       past_due. After Stripe has exhausted all payment retry
+       attempts, the subscription ends up with a status of either
+       canceled or unpaid depending on your retry settings. Note that
+       when a subscription has a status of unpaid, no subsequent
+       invoices will be attempted (invoices will be created, but then
+       immediately automatically closed. Additionally, updating
+       customer card details will not lead to Stripe retrying the
+       latest invoice.). After receiving updated card details from a
+       customer, you may choose to reopen and pay their closed
+       invoices.
+    *)
+
+  ?application_fee_percent: float option;
+    (*
+       A positive decimal that represents the fee percentage of the
+       subscription invoice amount that will be transferred to the
+       application owner’s Stripe account each billing period.
+     *)
+
+  ?canceled_at: timestamp option;
+    (*
+      If the subscription has been canceled, the date of that
+      cancellation. If the subscription was canceled with
+      cancel_at_period_end, canceled_at will still reflect the date of
+      the initial cancellation request, not the end of the
+      subscription period when the subscription is automatically moved
+      to a canceled state.
+    *)
+
+  current_period_end: timestamp;
+    (*
+      End of the current period that the subscription has been
+      invoiced for. At the end of this period, a new invoice will be
+      created.
+
+      Warning: It is reset to the current date + one month
+               when upgrading from a free plan to a paid plan.
+    *)
+
+  current_period_start: timestamp;
+    (*
+      Start of the current period that the subscription has been
+      invoiced for.
+
+      Warning: It is reset to the current date when upgrading from
+               a free plan to a paid plan.
+    *)
+
+  ?discount: discount option;
+    (*
+      Describes the current discount applied to this subscription, if
+      there is one. When billing, a discount applied to a subscription
+      overrides a discount applied on a customer-wide basis.
+    *)
+
+  ?ended_at: timestamp option;
+    (*
+      If the subscription has ended (either because it was canceled or
+      because the customer was switched to a subscription to a new
+      plan), the date the subscription ended
+    *)
+
+  ~metadata: metadata;
+    (*
+      A set of key/value pairs that you can attach to a subscription
+      object. It can be useful for storing additional information
+      about the subscription in a structured format.
+    *)
+
+  ?trial_end: timestamp option;
+    (* If the subscription has a trial, the end of that trial. *)
+
+  ?trial_start: timestamp option;
+    (* If the subscription has a trial, the beginning of that trial. *)
+
+} <ocaml field_prefix="sub_">
+
+
+type plan = {
+  id: plan_id;
+
+  object: string; (* = "plan" *)
+
+  livemode: bool;
+
+  amount: nonneg_int;
+    (* The amount in cents to be charged on the interval specified *)
+
+  created: timestamp;
+
+  currency: currency;
+    (* Currency in which subscription will be charged *)
+
+  interval: string;
+    (*
+      One of day, week, month or year. The frequency with which a
+      subscription should be billed.
+    *)
+
+  interval_count: nonneg_int;
+    (*
+      The number of intervals (specified in the interval property)
+      between each subscription billing. For example, interval=month
+      and interval_count=3 bills every 3 months.
+    *)
+
+  name: string;
+    (* Display name of the plan *)
+
+  ~metadata: metadata;
+    (*
+      A set of key/value pairs that you can attach to a plan
+      object. It can be useful for storing additional information
+      about the plan in a structured format.
+    *)
+
+  ?trial_period_days: pos_int option;
+    (*
+      Number of trial period days granted when subscribing a customer
+      to this plan. Null if the plan has no trial period.
+    *)
+
+  ?statement_descriptor: string option;
+    (*
+       Extra information about a charge for the customer’s credit card
+       statement.
+    *)
+
+} <ocaml field_prefix="plan_">
+
+
+type 'a event_data = {
+  object: 'a;
+    (*
+      describes the object the event is about. For example, an
+      invoice.created event will have a full invoice object as the
+      value of the object key.
+    *)
+
+(* TODO: needs fixing of issue https://github.com/mjambon/yojson/issues/12
+
+  ~previous_attributes: (string * json) list <json repr="object">;
+    (*
+      Hash [sic] containing the names of the attributes that have changed
+      and their previous values (only sent along with *.updated
+      events)
+    *)
+*)
+} <ocaml field_prefix="evd_">
+
+(*
+   An event with most fields omitted, just so we can figure
+   the type of the event in a first pass.
+*)
+type event_type = {
+  id: string;
+  type_ <json name="type">: string;
+    (*
+      Description of the event: e.g. invoice.created,
+      charge.refunded, etc.
+    *)
+} <ocaml field_prefix="evt_">
+
+type 'a event = {
+  id: string;
+  object: string; (* = "event" *)
+  livemode: bool;
+  created: timestamp;
+
+  data: 'a event_data;
+    (* Hash [sic] containing data associated with the event. *)
+
+  pending_webhooks: nonneg_int;
+    (*
+      Number of webhooks yet to be delivered successfully (return a
+      20x response) to the URLs you’ve specified.
+    *)
+
+  type_ <json name="type">: string;
+    (*
+      Description of the event: e.g. invoice.created,
+      charge.refunded, etc.
+    *)
+
+  api_version: string;
+    (* The Stripe API version used to render data. *)
+
+  ?request: string option;
+    (*
+      ID of the API request that caused the event. If null, the event
+      was automatic (e.g. Stripe’s automatic subscription
+      handling). Request logs are available in the dashboard but
+      currently not in the API. Note: this property is populated for
+      events on or after April 23, 2013.
+    *)
+
+} <ocaml field_prefix="ev_">
+
+
+type subscription_event = subscription event
+  (*
+     Events of that type:
+     customer.subscription.created
+     customer.subscription.updated
+     customer.subscription.deleted
+     customer.subscription.trial_will_end
+  *)
+
+type invoice_event = invoice event

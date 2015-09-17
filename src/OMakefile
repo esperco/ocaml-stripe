@@ -1,0 +1,19 @@
+# Client support for Stripe API (payments)
+
+OCAML_LIBS = $(OCAML_LIBS_stripe)
+
+FILES[] =
+  stripe_t
+  stripe_j
+  stripe_v
+  stripe_api
+
+Atdgen(stripe, -j-std)
+OCamlLibrary(stripe, $(FILES))
+Meta(stripe)
+
+.DEFAULT: META stripe.cma stripe.cmxa
+
+.PHONY: clean
+clean:
+	rm -f *.o *.a *.cm* *~ *.annot *.run *.opt META $(ATDGEN_OUTFILES)
